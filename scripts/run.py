@@ -32,7 +32,8 @@ FEEDBACK_LOG = ROOT / "feedback_log.md"
 
 MODEL = "claude-sonnet-4-6"
 MAX_TOKENS = 4000
-MAX_TOOL_CALLS = 10
+MAX_TOOL_CALLS_READ = 12   # Planner / read-only
+MAX_TOOL_CALLS_WRITE = 20  # Developer (reads + writes)
 MAX_FILE_CHARS = 8_000
 
 READ_FILE_TOOL = {
@@ -261,11 +262,24 @@ def call_agent_agentic(
         tools = [READ_FILE_TOOL]
     else:
         tools = []
+    max_calls = MAX_TOOL_CALLS_WRITE if write_enabled else MAX_TOOL_CALLS_READ
     tool_calls = 0
+    cap_warned = False
 
     while True:
-        # Stop offering tools once the cap is reached so the model must finish.
-        active_tools = tools if tool_calls < MAX_TOOL_CALLS else []
+        at_cap = tool_calls >= max_calls
+        if at_cap and not cap_warned:
+            # Inject a wrap-up nudge so the model produces a real final response.
+            messages.append({
+                "role": "user",
+                "content": (
+                    "Tool call limit reached. "
+                    "Stop calling tools now and write your complete final response."
+                ),
+            })
+            cap_warned = True
+
+        active_tools = [] if at_cap else tools
         response = client.messages.create(
             model=MODEL,
             max_tokens=MAX_TOKENS,
