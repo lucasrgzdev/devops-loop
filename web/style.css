@@ -358,6 +358,37 @@ button:disabled { opacity: 0.4; cursor: default; }
   font-size: 0.87rem;
 }
 
+/* ── Spawned follow-up tickets ── */
+.spawned-box {
+  margin-top: 14px;
+  background: #111a28;
+  border: 1px solid #1e3050;
+  border-radius: 8px;
+  padding: 12px var(--gap);
+}
+.spawned-title {
+  font-size: 0.73rem;
+  font-weight: 700;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 8px;
+}
+.spawned-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.84rem;
+  color: #bcd;
+  padding: 3px 0;
+}
+.spawned-dot {
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+}
+
 /* ── Run section labels ── */
 .run-section-label {
   font-size: 0.78rem;

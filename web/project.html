@@ -282,15 +282,34 @@
       btn.disabled = true;
       const card = document.getElementById(`run-${runId}`);
       card.querySelectorAll('button').forEach(b => b.disabled = true);
+
+      if (action === 'flag') {
+        btn.textContent = 'Flagging…';
+      }
+
       try {
         const res = await fetch(`/api/runs/${runId}/${action}`, { method: 'POST' });
         const data = await res.json();
         if (data.error) throw new Error(data.error);
+
         const badge = card.querySelector('.badge:last-of-type');
         if (action === 'approve') {
           badge.className = 'badge badge-approve'; badge.textContent = 'Approved';
         } else {
           badge.className = 'badge badge-flagged'; badge.textContent = 'Flagged';
+        }
+
+        if (action === 'flag' && data.spawned_tickets?.length) {
+          const el = document.createElement('div');
+          el.className = 'spawned-box';
+          el.innerHTML = `
+            <div class="spawned-title">Follow-up tickets created</div>
+            ${data.spawned_tickets.map(f => `
+              <div class="spawned-item">
+                <span class="spawned-dot"></span>${escHtml(f)}
+              </div>`).join('')}
+          `;
+          card.appendChild(el);
         }
       } catch (err) {
         alert('Error: ' + err.message);

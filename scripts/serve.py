@@ -8,6 +8,7 @@ Opens on http://localhost:5000 (desktop) or http://<YOUR_IP>:5000 (phone).
 """
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 import subprocess
@@ -15,6 +16,8 @@ import sys
 import threading
 from datetime import datetime
 from pathlib import Path
+
+import anthropic
 
 from flask import Flask, Response, jsonify, request, send_from_directory
 
@@ -47,6 +50,90 @@ def _run_in_background(project_name: str, ticket_number: str) -> None:
         )
     finally:
         _running.pop(key, None)
+
+
+SPAWN_MODEL = "claude-haiku-4-5-20251001"
+SPAWN_PROMPT = """\
+A ticket was reviewed and flagged as needing work.
+
+Original ticket: {ticket_filename}
+
+Reviewer output:
+{review_output}
+
+Generate 1-3 follow-up tickets — one per distinct issue — so a developer can fix each problem separately.
+Reply with ONLY a valid JSON array, no markdown fences, no extra text:
+[
+  {{
+    "title": "short imperative phrase, max 60 chars",
+    "body": "## Goal\\nOne sentence.\\n\\n## Acceptance criteria\\n- [ ] specific checkable item"
+  }}
+]"""
+
+
+def _slugify(title: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+
+
+def _next_ticket_number(tickets_dir: Path) -> str:
+    numbers = [
+        int(m.group(1))
+        for p in tickets_dir.glob("*.md")
+        if (m := re.match(r"^(\d+)-", p.name))
+    ]
+    return str(max(numbers, default=0) + 1).zfill(3)
+
+
+def _create_ticket(
+    conn: sqlite3.Connection,
+    project_id: int,
+    project_name: str,
+    title: str,
+    body: str,
+) -> str:
+    tickets_dir = PROJECTS_DIR / project_name / "tickets"
+    tickets_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"{_next_ticket_number(tickets_dir)}-{_slugify(title)}.md"
+    (tickets_dir / filename).write_text(body, encoding="utf-8")
+    conn.execute(
+        "INSERT INTO tickets (project_id, filename, title, status) VALUES (?, ?, ?, 'open')",
+        (project_id, filename, title),
+    )
+    conn.commit()
+    return filename
+
+
+def _spawn_followup_tickets(
+    project_id: int,
+    project_name: str,
+    ticket_filename: str,
+    review_output: str,
+) -> list[str]:
+    client = anthropic.Anthropic()
+    prompt = SPAWN_PROMPT.format(
+        ticket_filename=ticket_filename,
+        review_output=review_output,
+    )
+    resp = client.messages.create(
+        model=SPAWN_MODEL,
+        max_tokens=900,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    text = resp.content[0].text.strip()
+    text = re.sub(r"^```[a-z]*\n?", "", text)
+    text = re.sub(r"\n?```$", "", text.strip())
+    items = json.loads(text)
+
+    conn = get_db()
+    created = []
+    for item in items[:3]:
+        filename = _create_ticket(
+            conn, project_id, project_name,
+            item["title"], item.get("body", f"## Goal\n{item['title']}\n")
+        )
+        created.append(filename)
+    conn.close()
+    return created
 
 
 def build_tree(root: Path, prefix: str = "", depth: int = 0, max_depth: int = 3) -> str:
@@ -270,7 +357,33 @@ def approve_run(run_id: int) -> Response:
 @app.route("/api/runs/<int:run_id>/flag", methods=["POST"])
 def flag_run(run_id: int) -> Response:
     note = (request.get_json(silent=True) or {}).get("note", "")
-    return _set_verdict(run_id, approved=-1, note=note, label="flagged")
+
+    conn = get_db()
+    ctx = conn.execute("""
+        SELECT r.review_output, t.filename, t.project_id, p.name AS project_name
+        FROM runs r
+        JOIN tickets t ON t.id  = r.ticket_id
+        JOIN projects p ON p.id = t.project_id
+        WHERE r.id = ?
+    """, (run_id,)).fetchone()
+    conn.close()
+
+    resp = _set_verdict(run_id, approved=-1, note=note, label="flagged")
+    if resp.status_code != 200 or not ctx:
+        return resp
+
+    spawned: list[str] = []
+    try:
+        spawned = _spawn_followup_tickets(
+            ctx["project_id"], ctx["project_name"],
+            ctx["filename"], ctx["review_output"] or "",
+        )
+    except Exception as exc:
+        app.logger.warning("spawn_followup_tickets failed: %s", exc)
+
+    body = resp.get_json()
+    body["spawned_tickets"] = spawned
+    return jsonify(body)
 
 
 @app.route("/api/projects/<int:project_id>/tickets/run", methods=["POST"])
