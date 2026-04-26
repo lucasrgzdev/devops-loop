@@ -10,6 +10,28 @@
 <body>
   <a class="back" href="/">← All projects</a>
 
+  <!-- Add ticket modal -->
+  <div class="modal-overlay" id="modal-ticket" style="display:none" onclick="if(event.target===this)closeTicketModal()">
+    <div class="modal">
+      <h2>Add ticket</h2>
+      <div class="modal-error" id="ticket-error"></div>
+      <form onsubmit="submitAddTicket(event)">
+        <div class="form-group">
+          <label class="form-label">Title *</label>
+          <input class="form-input" id="t-title" required placeholder="short imperative phrase" autocomplete="off">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Body (optional)</label>
+          <textarea class="form-textarea" id="t-body" placeholder="## Goal&#10;One sentence.&#10;&#10;## Acceptance criteria&#10;- [ ]"></textarea>
+        </div>
+        <div class="btn-row">
+          <button type="button" class="btn-secondary" onclick="closeTicketModal()">Cancel</button>
+          <button type="submit" class="btn-primary" id="ticket-submit-btn">Add ticket</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
   <nav class="bottom-nav">
     <a href="/dashboard.html" class="nav-item">
       <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
@@ -47,7 +69,19 @@
 
     <!-- Brief tab -->
     <div id="tab-brief" class="tab-panel">
-      <div id="brief-content"></div>
+      <div id="brief-view">
+        <div style="display:flex;justify-content:flex-end;margin-bottom:8px">
+          <button class="btn-sm btn-ghost" onclick="startEditBrief()">Edit</button>
+        </div>
+        <div id="brief-content"></div>
+      </div>
+      <div id="brief-edit" style="display:none">
+        <textarea class="form-textarea" id="brief-textarea" style="min-height:280px"></textarea>
+        <div class="brief-edit-bar">
+          <button class="btn-sm btn-ghost" onclick="cancelBrief()">Cancel</button>
+          <button class="btn-sm btn-primary" onclick="saveBrief()">Save</button>
+        </div>
+      </div>
       <div id="tree-section" style="display:none">
         <h2 style="margin-top:20px; margin-bottom:8px">Codebase structure</h2>
         <pre id="tree-content" class="tree-box"></pre>
@@ -56,6 +90,9 @@
 
     <!-- Tickets tab -->
     <div id="tab-tickets" class="tab-panel" style="display:none">
+      <div style="display:flex;justify-content:flex-end;margin-bottom:12px">
+        <button class="btn-sm btn-primary" onclick="openTicketModal()">+ Add ticket</button>
+      </div>
       <div id="tickets-list"></div>
     </div>
 
@@ -71,6 +108,16 @@
     if (!projectId) document.getElementById('loading').textContent = 'Missing ?id= in URL.';
 
     marked.setOptions({ breaks: true });
+
+    let _rawBrief = '';
+    let _currentTickets = [];
+
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape') {
+        closeTicketModal();
+        cancelBrief();
+      }
+    });
 
     // ── Tabs ────────────────────────────────────────────────────────────────
 
@@ -108,29 +155,64 @@
     // ── Render ───────────────────────────────────────────────────────────────
 
     function renderBrief(brief, tree) {
+      _rawBrief = brief || '';
       const el = document.getElementById('brief-content');
-      if (brief) {
-        el.innerHTML = `<div class="md-body">${marked.parse(brief)}</div>`;
-      } else {
-        el.innerHTML = '<p class="empty">No brief.md found.<br>Add one at projects/&lt;name&gt;/brief.md</p>';
-      }
+      el.innerHTML = brief
+        ? `<div class="md-body">${marked.parse(brief)}</div>`
+        : '<p class="empty">No brief.md yet — hit Edit to write one.</p>';
       if (tree) {
         document.getElementById('tree-section').style.display = '';
         document.getElementById('tree-content').textContent = tree;
       }
     }
 
+    // ── Brief edit ───────────────────────────────────────────────────────────
+
+    function startEditBrief() {
+      document.getElementById('brief-textarea').value = _rawBrief;
+      document.getElementById('brief-view').style.display = 'none';
+      document.getElementById('brief-edit').style.display  = '';
+      document.getElementById('brief-textarea').focus();
+    }
+
+    function cancelBrief() {
+      document.getElementById('brief-view').style.display = '';
+      document.getElementById('brief-edit').style.display  = 'none';
+    }
+
+    async function saveBrief() {
+      const content = document.getElementById('brief-textarea').value;
+      try {
+        const res = await fetch(`/api/projects/${projectId}/brief`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content }),
+        });
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+        _rawBrief = content;
+        document.getElementById('brief-content').innerHTML = content
+          ? `<div class="md-body">${marked.parse(content)}</div>`
+          : '<p class="empty">No brief.md yet — hit Edit to write one.</p>';
+        cancelBrief();
+      } catch (err) {
+        alert('Error: ' + err.message);
+      }
+    }
+
     function renderTickets(tickets) {
+      _currentTickets = tickets;
       document.getElementById('ticket-count').textContent = tickets.length || '';
       const el = document.getElementById('tickets-list');
       if (!tickets.length) {
-        el.innerHTML = '<p class="empty">No tickets yet.<br>Add .md files to projects/&lt;name&gt;/tickets/</p>';
+        el.innerHTML = '<p class="empty">No tickets yet. Hit + Add ticket to create one.</p>';
         return;
       }
       el.innerHTML = '';
       for (const t of tickets) {
         const card = document.createElement('div');
         card.className = 'ticket-card';
+        card.dataset.filename = t.filename;
         const badge = t.is_running ? statusBadge('running') : statusBadge(t.status);
         const runBtn = t.is_running
           ? `<button class="btn-run" disabled>Running…</button>`
@@ -149,9 +231,87 @@
           </div>
           <div class="ticket-body" style="display:none">
             <div class="md-body">${marked.parse(t.content)}</div>
+            <div class="btn-row" style="margin-top:12px">
+              <button class="btn-sm btn-ghost"
+                data-filename="${escHtml(t.filename)}"
+                onclick="deleteTicket(this.dataset.filename, this)">Delete ticket</button>
+            </div>
           </div>
         `;
         el.appendChild(card);
+      }
+    }
+
+    // ── Ticket modal ─────────────────────────────────────────────────────────
+
+    function openTicketModal() {
+      document.getElementById('ticket-error').textContent = '';
+      document.getElementById('t-title').value = '';
+      document.getElementById('t-body').value  = '';
+      document.getElementById('ticket-submit-btn').disabled = false;
+      document.getElementById('ticket-submit-btn').textContent = 'Add ticket';
+      document.getElementById('modal-ticket').style.display = 'flex';
+      document.getElementById('t-title').focus();
+    }
+
+    function closeTicketModal() {
+      document.getElementById('modal-ticket').style.display = 'none';
+    }
+
+    async function submitAddTicket(e) {
+      e.preventDefault();
+      const errEl = document.getElementById('ticket-error');
+      errEl.textContent = '';
+      const btn = document.getElementById('ticket-submit-btn');
+      btn.disabled = true;
+      btn.textContent = 'Adding…';
+      try {
+        const res = await fetch(`/api/projects/${projectId}/tickets`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title: document.getElementById('t-title').value.trim(),
+            body:  document.getElementById('t-body').value.trim(),
+          }),
+        });
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+        closeTicketModal();
+        renderTickets([..._currentTickets, data]);
+        document.querySelectorAll('.tab-btn')[1].click();
+      } catch (err) {
+        errEl.textContent = err.message;
+        btn.disabled = false;
+        btn.textContent = 'Add ticket';
+      }
+    }
+
+    async function deleteTicket(filename, btn) {
+      if (btn.dataset.confirm !== 'true') {
+        btn.dataset.confirm = 'true';
+        btn.textContent = 'Sure?';
+        btn.classList.add('btn-danger');
+        setTimeout(() => {
+          if (btn.dataset.confirm === 'true') {
+            btn.dataset.confirm = '';
+            btn.textContent = 'Delete ticket';
+            btn.classList.remove('btn-danger');
+          }
+        }, 3000);
+        return;
+      }
+      btn.disabled = true;
+      try {
+        const res = await fetch(
+          `/api/projects/${projectId}/tickets/${encodeURIComponent(filename)}`,
+          { method: 'DELETE' },
+        );
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+        renderTickets(_currentTickets.filter(t => t.filename !== filename));
+      } catch (err) {
+        alert('Error: ' + err.message);
+        btn.disabled = false;
       }
     }
 

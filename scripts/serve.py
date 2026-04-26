@@ -245,6 +245,66 @@ def dashboard_api() -> Response:
     })
 
 
+@app.route("/api/projects", methods=["POST"])
+def create_project() -> Response:
+    data = request.get_json(silent=True) or {}
+    name = data.get("name", "").strip()
+    github_url = data.get("github_url", "").strip()
+    description = data.get("description", "").strip() or None
+    repo_path_str = data.get("repo_path", "").strip() or None
+
+    if not name or not github_url:
+        return jsonify({"error": "name and github_url are required"}), 400
+
+    conn = get_db()
+    try:
+        cursor = conn.execute(
+            "INSERT INTO projects (name, github_url, repo_path, description) VALUES (?, ?, ?, ?)",
+            (name, github_url, repo_path_str, description),
+        )
+        project_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+    except sqlite3.IntegrityError:
+        conn.close()
+        return jsonify({"error": f"Project '{name}' already exists"}), 409
+
+    project_dir = PROJECTS_DIR / name
+    (project_dir / "tickets").mkdir(parents=True, exist_ok=True)
+    brief_path = project_dir / "brief.md"
+    if not brief_path.exists():
+        brief_path.write_text(f"# {name}\n\nDescribe this project here.\n", encoding="utf-8")
+
+    return jsonify({"id": project_id, "name": name}), 201
+
+
+@app.route("/api/projects/<int:project_id>", methods=["DELETE"])
+def delete_project(project_id: int) -> Response:
+    conn = get_db()
+    project = conn.execute("SELECT name FROM projects WHERE id = ?", (project_id,)).fetchone()
+    if not project:
+        conn.close()
+        return jsonify({"error": "not found"}), 404
+
+    conn.execute("""
+        DELETE FROM feedback WHERE run_id IN (
+            SELECT r.id FROM runs r
+            JOIN tickets t ON t.id = r.ticket_id
+            WHERE t.project_id = ?
+        )
+    """, (project_id,))
+    conn.execute("""
+        DELETE FROM runs WHERE ticket_id IN (
+            SELECT id FROM tickets WHERE project_id = ?
+        )
+    """, (project_id,))
+    conn.execute("DELETE FROM tickets WHERE project_id = ?", (project_id,))
+    conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({"deleted": project_id})
+
+
 @app.route("/api/projects")
 def list_projects() -> Response:
     conn = get_db()
@@ -384,6 +444,71 @@ def flag_run(run_id: int) -> Response:
     body = resp.get_json()
     body["spawned_tickets"] = spawned
     return jsonify(body)
+
+
+@app.route("/api/projects/<int:project_id>/tickets", methods=["POST"])
+def create_ticket_api(project_id: int) -> Response:
+    data = request.get_json(silent=True) or {}
+    title = data.get("title", "").strip()
+    body = data.get("body", "").strip()
+    if not title:
+        return jsonify({"error": "title is required"}), 400
+
+    conn = get_db()
+    project = conn.execute("SELECT name FROM projects WHERE id = ?", (project_id,)).fetchone()
+    if not project:
+        conn.close()
+        return jsonify({"error": "not found"}), 404
+
+    if not body:
+        body = f"## Goal\n{title}\n\n## Acceptance criteria\n- [ ]\n"
+
+    filename = _create_ticket(conn, project_id, project["name"], title, body)
+    conn.close()
+    ticket_path = PROJECTS_DIR / project["name"] / "tickets" / filename
+    return jsonify({
+        "filename": filename,
+        "content": ticket_path.read_text(encoding="utf-8"),
+        "status": "open",
+        "is_running": False,
+    }), 201
+
+
+@app.route("/api/projects/<int:project_id>/tickets/<path:filename>", methods=["DELETE"])
+def delete_ticket_api(project_id: int, filename: str) -> Response:
+    conn = get_db()
+    project = conn.execute("SELECT name FROM projects WHERE id = ?", (project_id,)).fetchone()
+    if not project:
+        conn.close()
+        return jsonify({"error": "not found"}), 404
+
+    conn.execute(
+        "DELETE FROM tickets WHERE project_id = ? AND filename = ?",
+        (project_id, filename),
+    )
+    conn.commit()
+    conn.close()
+
+    ticket_path = PROJECTS_DIR / project["name"] / "tickets" / filename
+    if ticket_path.exists():
+        ticket_path.unlink()
+
+    return jsonify({"deleted": filename})
+
+
+@app.route("/api/projects/<int:project_id>/brief", methods=["PUT"])
+def update_brief(project_id: int) -> Response:
+    data = request.get_json(silent=True) or {}
+    content = data.get("content", "")
+
+    conn = get_db()
+    project = conn.execute("SELECT name FROM projects WHERE id = ?", (project_id,)).fetchone()
+    conn.close()
+    if not project:
+        return jsonify({"error": "not found"}), 404
+
+    (PROJECTS_DIR / project["name"] / "brief.md").write_text(content, encoding="utf-8")
+    return jsonify({"saved": True})
 
 
 @app.route("/api/projects/<int:project_id>/tickets/run", methods=["POST"])

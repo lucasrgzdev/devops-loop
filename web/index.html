@@ -3,13 +3,48 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>devops-loop</title>
+  <title>Projects — devops-loop</title>
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <h1>Projects</h1>
+
+  <div class="page-title-row">
+    <h1>Projects</h1>
+    <button class="btn-sm btn-primary" onclick="openModal()">+ Add</button>
+  </div>
+
   <div id="loading">Loading...</div>
   <div id="list"></div>
+
+  <!-- Add project modal -->
+  <div class="modal-overlay" id="modal" style="display:none" onclick="if(event.target===this)closeModal()">
+    <div class="modal">
+      <h2>Add project</h2>
+      <div class="modal-error" id="form-error"></div>
+      <form onsubmit="submitAdd(event)">
+        <div class="form-group">
+          <label class="form-label">Name *</label>
+          <input class="form-input" id="f-name" required placeholder="my-app" autocomplete="off">
+        </div>
+        <div class="form-group">
+          <label class="form-label">GitHub URL *</label>
+          <input class="form-input" id="f-url" required placeholder="https://github.com/you/my-app" autocomplete="off">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Description</label>
+          <input class="form-input" id="f-desc" placeholder="One-line description">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Local repo path</label>
+          <input class="form-input" id="f-repo" placeholder="repos/my-app">
+        </div>
+        <div class="btn-row">
+          <button type="button" class="btn-secondary" onclick="closeModal()">Cancel</button>
+          <button type="submit" class="btn-primary" id="submit-btn">Add project</button>
+        </div>
+      </form>
+    </div>
+  </div>
 
   <nav class="bottom-nav">
     <a href="/dashboard.html" class="nav-item">
@@ -30,6 +65,17 @@
   </nav>
 
   <script>
+    // ── Modal ──────────────────────────────────────────────────────────────
+    function openModal() {
+      document.getElementById('form-error').textContent = '';
+      document.getElementById('modal').style.display = 'flex';
+    }
+    function closeModal() {
+      document.getElementById('modal').style.display = 'none';
+    }
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+
+    // ── Helpers ────────────────────────────────────────────────────────────
     const statusBadge = (s) => {
       const map = { active: 'badge-active', paused: 'badge-paused', done: 'badge-done' };
       return `<span class="badge ${map[s] ?? 'badge-done'}">${s}</span>`;
@@ -42,34 +88,113 @@
            + ' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
     };
 
-    async function load() {
-      const res = await fetch('/api/projects');
-      const projects = await res.json();
+    const escHtml = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 
-      document.getElementById('loading').remove();
+    // ── Render ────────────────────────────────────────────────────────────
+    let _projects = [];
+
+    function renderList(projects) {
+      _projects = projects;
       const list = document.getElementById('list');
-
       if (!projects.length) {
-        list.innerHTML = '<p class="empty">No projects yet.<br>Register one with init_db.py --add-project</p>';
+        list.innerHTML = '<p class="empty">No projects yet. Hit + Add to register one.</p>';
         return;
       }
-
+      list.innerHTML = '';
       for (const p of projects) {
         const card = document.createElement('div');
         card.className = 'card';
+        card.id = `proj-${p.id}`;
         card.innerHTML = `
-          <div class="card-title">${p.name} ${statusBadge(p.status)}</div>
-          ${p.description ? `<div class="card-meta">${p.description}</div>` : ''}
-          <div class="card-github">${p.github_url}</div>
-          <div class="card-meta" style="margin-top:8px">
-            ${p.ticket_count} ticket${p.ticket_count !== 1 ? 's' : ''}
-            &nbsp;·&nbsp;
-            last run: ${fmtDate(p.last_run_at)}
+          <div class="card-row">
+            <div class="card-body" onclick="window.location.href='/project.html?id=${p.id}'">
+              <div class="card-title">${escHtml(p.name)} ${statusBadge(p.status)}</div>
+              ${p.description ? `<div class="card-meta">${escHtml(p.description)}</div>` : ''}
+              <div class="card-github">${escHtml(p.github_url)}</div>
+              <div class="card-meta" style="margin-top:8px">
+                ${p.ticket_count} ticket${p.ticket_count !== 1 ? 's' : ''}
+                &nbsp;·&nbsp; last run: ${fmtDate(p.last_run_at)}
+              </div>
+            </div>
+            <div class="card-actions">
+              <button class="btn-sm btn-ghost" onclick="deleteProject(${p.id}, this)">Delete</button>
+            </div>
           </div>
         `;
-        card.onclick = () => { window.location.href = `/project.html?id=${p.id}`; };
         list.appendChild(card);
       }
+    }
+
+    // ── Delete project ────────────────────────────────────────────────────
+    async function deleteProject(id, btn) {
+      if (btn.dataset.confirm !== 'true') {
+        btn.dataset.confirm = 'true';
+        btn.textContent = 'Sure?';
+        btn.classList.add('btn-danger');
+        setTimeout(() => {
+          if (btn.dataset.confirm === 'true') {
+            btn.dataset.confirm = '';
+            btn.textContent = 'Delete';
+            btn.classList.remove('btn-danger');
+          }
+        }, 3000);
+        return;
+      }
+      btn.disabled = true;
+      try {
+        const res = await fetch(`/api/projects/${id}`, { method: 'DELETE' });
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+        document.getElementById(`proj-${id}`)?.remove();
+        if (!document.querySelector('.card')) {
+          document.getElementById('list').innerHTML =
+            '<p class="empty">No projects yet. Hit + Add to register one.</p>';
+        }
+      } catch (err) {
+        alert('Error: ' + err.message);
+        btn.disabled = false;
+      }
+    }
+
+    // ── Add project ───────────────────────────────────────────────────────
+    async function submitAdd(e) {
+      e.preventDefault();
+      const errEl = document.getElementById('form-error');
+      errEl.textContent = '';
+      const btn = document.getElementById('submit-btn');
+      btn.disabled = true;
+      btn.textContent = 'Adding…';
+
+      const payload = {
+        name:        document.getElementById('f-name').value.trim(),
+        github_url:  document.getElementById('f-url').value.trim(),
+        description: document.getElementById('f-desc').value.trim(),
+        repo_path:   document.getElementById('f-repo').value.trim(),
+      };
+
+      try {
+        const res = await fetch('/api/projects', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+        closeModal();
+        window.location.href = `/project.html?id=${data.id}`;
+      } catch (err) {
+        errEl.textContent = err.message;
+        btn.disabled = false;
+        btn.textContent = 'Add project';
+      }
+    }
+
+    // ── Load ──────────────────────────────────────────────────────────────
+    async function load() {
+      const res = await fetch('/api/projects');
+      const projects = await res.json();
+      document.getElementById('loading').remove();
+      renderList(projects);
     }
 
     load().catch(err => {
