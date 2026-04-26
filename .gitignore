@@ -1,0 +1,19 @@
+# Database
+db/projects.db
+
+# Environment
+.env
+
+# Cloned repos (managed by run.py / clone-repos.sh)
+repos/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/

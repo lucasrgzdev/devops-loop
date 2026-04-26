@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>devops-loop</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <h1>Projects</h1>
+  <div id="loading">Loading...</div>
+  <div id="list"></div>
+
+  <nav class="bottom-nav">
+    <a href="/dashboard.html" class="nav-item">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <rect x="3" y="3" width="8" height="8" rx="1.5"/>
+        <rect x="13" y="3" width="8" height="8" rx="1.5"/>
+        <rect x="3"  y="13" width="8" height="8" rx="1.5"/>
+        <rect x="13" y="13" width="8" height="8" rx="1.5"/>
+      </svg>
+      <span>Dashboard</span>
+    </a>
+    <a href="/" class="nav-item active">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <path d="M3 7a2 2 0 012-2h3.586l2 2H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/>
+      </svg>
+      <span>Projects</span>
+    </a>
+  </nav>
+
+  <script>
+    const statusBadge = (s) => {
+      const map = { active: 'badge-active', paused: 'badge-paused', done: 'badge-done' };
+      return `<span class="badge ${map[s] ?? 'badge-done'}">${s}</span>`;
+    };
+
+    const fmtDate = (iso) => {
+      if (!iso) return 'no runs yet';
+      const d = new Date(iso);
+      return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+           + ' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+    };
+
+    async function load() {
+      const res = await fetch('/api/projects');
+      const projects = await res.json();
+
+      document.getElementById('loading').remove();
+      const list = document.getElementById('list');
+
+      if (!projects.length) {
+        list.innerHTML = '<p class="empty">No projects yet.<br>Register one with init_db.py --add-project</p>';
+        return;
+      }
+
+      for (const p of projects) {
+        const card = document.createElement('div');
+        card.className = 'card';
+        card.innerHTML = `
+          <div class="card-title">${p.name} ${statusBadge(p.status)}</div>
+          ${p.description ? `<div class="card-meta">${p.description}</div>` : ''}
+          <div class="card-github">${p.github_url}</div>
+          <div class="card-meta" style="margin-top:8px">
+            ${p.ticket_count} ticket${p.ticket_count !== 1 ? 's' : ''}
+            &nbsp;·&nbsp;
+            last run: ${fmtDate(p.last_run_at)}
+          </div>
+        `;
+        card.onclick = () => { window.location.href = `/project.html?id=${p.id}`; };
+        list.appendChild(card);
+      }
+    }
+
+    load().catch(err => {
+      document.getElementById('loading').textContent = 'Failed to load: ' + err.message;
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>devops-loop</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+  <div class="page-header">
+    <h1>devops-loop</h1>
+    <span id="running-pill" class="badge badge-running" style="display:none">running</span>
+  </div>
+
+  <div id="loading">Loading...</div>
+
+  <div id="content" style="display:none">
+
+    <div class="stat-grid">
+      <div class="stat-card">
+        <div class="stat-value" id="s-projects">—</div>
+        <div class="stat-label">Projects</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" id="s-open">—</div>
+        <div class="stat-label">Open tickets</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" id="s-runs">—</div>
+        <div class="stat-label">Total runs</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value green" id="s-approved">—</div>
+        <div class="stat-label">Approved</div>
+      </div>
+    </div>
+
+    <div id="running-section" style="display:none">
+      <div class="section-title">Running now</div>
+      <div id="running-list"></div>
+    </div>
+
+    <div class="section-title">Recent runs</div>
+    <div id="recent-list"></div>
+
+  </div>
+
+  <nav class="bottom-nav">
+    <a href="/dashboard.html" class="nav-item active">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <rect x="3" y="3" width="8" height="8" rx="1.5"/>
+        <rect x="13" y="3" width="8" height="8" rx="1.5"/>
+        <rect x="3"  y="13" width="8" height="8" rx="1.5"/>
+        <rect x="13" y="13" width="8" height="8" rx="1.5"/>
+      </svg>
+      <span>Dashboard</span>
+    </a>
+    <a href="/" class="nav-item">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <path d="M3 7a2 2 0 012-2h3.586l2 2H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/>
+      </svg>
+      <span>Projects</span>
+    </a>
+  </nav>
+
+  <script>
+    const verdictBadge = (approved) => {
+      if (approved ===  1) return '<span class="badge badge-approve">Approved</span>';
+      if (approved === -1) return '<span class="badge badge-flagged">Flagged</span>';
+      return '<span class="badge badge-pending">Pending</span>';
+    };
+
+    function fmtRelative(iso) {
+      if (!iso) return '—';
+      const sec = (Date.now() - new Date(iso + 'Z').getTime()) / 1000;
+      if (sec < 60)    return 'just now';
+      if (sec < 3600)  return `${Math.floor(sec / 60)}m ago`;
+      if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
+      return `${Math.floor(sec / 86400)}d ago`;
+    }
+
+    let _pollTimer = null;
+
+    function startPolling() {
+      if (_pollTimer) return;
+      _pollTimer = setInterval(load, 4000);
+    }
+
+    function stopPolling() {
+      clearInterval(_pollTimer);
+      _pollTimer = null;
+    }
+
+    async function load() {
+      const res = await fetch('/api/dashboard');
+      const d = await res.json();
+
+      document.getElementById('loading').style.display = 'none';
+      document.getElementById('content').style.display = '';
+
+      document.getElementById('s-projects').textContent = d.projects.total;
+      document.getElementById('s-open').textContent     = d.tickets.open;
+      document.getElementById('s-runs').textContent     = d.runs.total;
+      document.getElementById('s-approved').textContent = d.runs.approved;
+
+      // Running pill + section
+      const pill    = document.getElementById('running-pill');
+      const rSection = document.getElementById('running-section');
+      const rList   = document.getElementById('running-list');
+      if (d.currently_running.length) {
+        pill.style.display = '';
+        rSection.style.display = '';
+        rList.innerHTML = d.currently_running.map(r => `
+          <div class="running-item">
+            <span class="badge badge-running">running</span>
+            <span>${r.project} / ${r.filename}</span>
+          </div>
+        `).join('');
+        startPolling();
+      } else {
+        pill.style.display = 'none';
+        rSection.style.display = 'none';
+        stopPolling();
+      }
+
+      // Recent runs
+      const recentEl = document.getElementById('recent-list');
+      if (!d.recent_runs.length) {
+        recentEl.innerHTML = '<p class="empty">No runs yet.</p>';
+        return;
+      }
+      recentEl.innerHTML = d.recent_runs.map(r => `
+        <a href="/project.html?id=${r.project_id}" class="activity-item">
+          <div style="min-width:0">
+            <div class="activity-project">${r.project_name}</div>
+            <div class="activity-ticket">${r.ticket_filename}</div>
+          </div>
+          <div class="activity-right">
+            ${verdictBadge(r.approved)}
+            <div class="activity-date">${fmtRelative(r.created_at)}</div>
+          </div>
+        </a>
+      `).join('');
+    }
+
+    load().catch(err => {
+      document.getElementById('loading').textContent = 'Failed to load: ' + err.message;
+    });
+  </script>
+</body>
+</html>

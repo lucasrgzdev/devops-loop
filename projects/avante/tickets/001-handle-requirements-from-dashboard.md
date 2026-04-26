@@ -1,0 +1,1 @@
+## Goal\nInclude Acceptance/Rejection button for suggested refinements in the knowledge core dashboard ## Acceptance criteria\n- [ ] I can accept/reject refinements and execute them across all knowledge core modules from the dashboard

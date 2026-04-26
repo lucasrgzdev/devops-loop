@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Project</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+</head>
+<body>
+  <a class="back" href="/">← All projects</a>
+
+  <nav class="bottom-nav">
+    <a href="/dashboard.html" class="nav-item">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <rect x="3" y="3" width="8" height="8" rx="1.5"/>
+        <rect x="13" y="3" width="8" height="8" rx="1.5"/>
+        <rect x="3"  y="13" width="8" height="8" rx="1.5"/>
+        <rect x="13" y="13" width="8" height="8" rx="1.5"/>
+      </svg>
+      <span>Dashboard</span>
+    </a>
+    <a href="/" class="nav-item active">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <path d="M3 7a2 2 0 012-2h3.586l2 2H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/>
+      </svg>
+      <span>Projects</span>
+    </a>
+  </nav>
+  <div id="loading">Loading...</div>
+
+  <div id="content" style="display:none">
+    <div class="project-header">
+      <div class="project-header-top">
+        <h1 id="project-name"></h1>
+        <span id="project-badge"></span>
+      </div>
+      <a id="project-github" href="#" target="_blank"></a>
+      <p id="project-desc" class="card-meta" style="margin-top:4px"></p>
+    </div>
+
+    <div class="tabs">
+      <button class="tab-btn active" onclick="showTab('brief')">Brief</button>
+      <button class="tab-btn" onclick="showTab('tickets')">Tickets <span id="ticket-count" class="tab-count"></span></button>
+      <button class="tab-btn" onclick="showTab('runs')">Runs <span id="run-count" class="tab-count"></span></button>
+    </div>
+
+    <!-- Brief tab -->
+    <div id="tab-brief" class="tab-panel">
+      <div id="brief-content"></div>
+      <div id="tree-section" style="display:none">
+        <h2 style="margin-top:20px; margin-bottom:8px">Codebase structure</h2>
+        <pre id="tree-content" class="tree-box"></pre>
+      </div>
+    </div>
+
+    <!-- Tickets tab -->
+    <div id="tab-tickets" class="tab-panel" style="display:none">
+      <div id="tickets-list"></div>
+    </div>
+
+    <!-- Runs tab -->
+    <div id="tab-runs" class="tab-panel" style="display:none">
+      <div id="runs-list"></div>
+    </div>
+  </div>
+
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    const projectId = params.get('id');
+    if (!projectId) document.getElementById('loading').textContent = 'Missing ?id= in URL.';
+
+    marked.setOptions({ breaks: true });
+
+    // ── Tabs ────────────────────────────────────────────────────────────────
+
+    function showTab(name) {
+      document.querySelectorAll('.tab-panel').forEach(p => p.style.display = 'none');
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      document.getElementById('tab-' + name).style.display = '';
+      event.currentTarget.classList.add('active');
+    }
+
+    // ── Helpers ─────────────────────────────────────────────────────────────
+
+    const statusBadge = (s) => {
+      const map = { active: 'badge-active', paused: 'badge-paused', done: 'badge-done',
+                    open: 'badge-pending', running: 'badge-running' };
+      return `<span class="badge ${map[s] ?? 'badge-done'}">${s}</span>`;
+    };
+
+    const verdictBadge = (approved) => {
+      if (approved === 1)  return '<span class="badge badge-approve">Approved</span>';
+      if (approved === -1) return '<span class="badge badge-flagged">Flagged</span>';
+      return '<span class="badge badge-pending">Pending</span>';
+    };
+
+    const fmtDate = (iso) => {
+      if (!iso) return '—';
+      const d = new Date(iso);
+      return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+           + ' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+    };
+
+    const escHtml = (s) => s
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    // ── Render ───────────────────────────────────────────────────────────────
+
+    function renderBrief(brief, tree) {
+      const el = document.getElementById('brief-content');
+      if (brief) {
+        el.innerHTML = `<div class="md-body">${marked.parse(brief)}</div>`;
+      } else {
+        el.innerHTML = '<p class="empty">No brief.md found.<br>Add one at projects/&lt;name&gt;/brief.md</p>';
+      }
+      if (tree) {
+        document.getElementById('tree-section').style.display = '';
+        document.getElementById('tree-content').textContent = tree;
+      }
+    }
+
+    function renderTickets(tickets) {
+      document.getElementById('ticket-count').textContent = tickets.length || '';
+      const el = document.getElementById('tickets-list');
+      if (!tickets.length) {
+        el.innerHTML = '<p class="empty">No tickets yet.<br>Add .md files to projects/&lt;name&gt;/tickets/</p>';
+        return;
+      }
+      el.innerHTML = '';
+      for (const t of tickets) {
+        const card = document.createElement('div');
+        card.className = 'ticket-card';
+        const badge = t.is_running ? statusBadge('running') : statusBadge(t.status);
+        const runBtn = t.is_running
+          ? `<button class="btn-run" disabled>Running…</button>`
+          : `<button class="btn-run" data-filename="${escHtml(t.filename)}"
+               onclick="event.stopPropagation(); runTicket(this.dataset.filename, this)">Run</button>`;
+        card.innerHTML = `
+          <div class="ticket-header" onclick="toggleTicket(this)">
+            <div class="ticket-header-left">
+              <span class="ticket-name">${escHtml(t.filename)}</span>
+              ${badge}
+            </div>
+            <div class="ticket-header-right">
+              ${runBtn}
+              <span class="chevron">▶</span>
+            </div>
+          </div>
+          <div class="ticket-body" style="display:none">
+            <div class="md-body">${marked.parse(t.content)}</div>
+          </div>
+        `;
+        el.appendChild(card);
+      }
+    }
+
+    function toggleTicket(header) {
+      const body = header.nextElementSibling;
+      const chevron = header.querySelector('.chevron');
+      const open = body.style.display !== 'none';
+      body.style.display = open ? 'none' : '';
+      chevron.textContent = open ? '▶' : '▼';
+    }
+
+    function renderRuns(runs) {
+      document.getElementById('run-count').textContent = runs.length || '';
+      const el = document.getElementById('runs-list');
+      if (!runs.length) {
+        el.innerHTML = '<p class="empty">No runs yet.<br>Run a ticket with scripts/run.py</p>';
+        return;
+      }
+      for (const run of runs) {
+        el.appendChild(buildRunCard(run));
+      }
+    }
+
+    // ── Polling ─────────────────────────────────────────────────────────────
+
+    let _pollTimer = null;
+    let _pollRunCount = 0;
+
+    function startPolling() {
+      if (_pollTimer) return;
+      _pollRunCount = document.querySelectorAll('.run-card').length;
+      _pollTimer = setInterval(async () => {
+        try {
+          const res = await fetch(`/api/projects/${projectId}/runs`);
+          const data = await res.json();
+          if (!data.tickets) return;
+          const anyRunning = data.tickets.some(t => t.is_running);
+          if (data.runs.length > _pollRunCount || !anyRunning) {
+            stopPolling();
+            renderTickets(data.tickets);
+            renderRuns(data.runs);
+            if (data.runs.length > _pollRunCount) {
+              document.querySelectorAll('.tab-btn')[2].click();
+            }
+          }
+        } catch (_) {}
+      }, 3000);
+    }
+
+    function stopPolling() {
+      clearInterval(_pollTimer);
+      _pollTimer = null;
+    }
+
+    async function runTicket(filename, btn) {
+      btn.disabled = true;
+      btn.textContent = 'Running…';
+      const badge = btn.closest('.ticket-card').querySelector('.badge');
+      badge.className = 'badge badge-running';
+      badge.textContent = 'running';
+      try {
+        const res = await fetch(`/api/projects/${projectId}/tickets/run`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ filename }),
+        });
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+        startPolling();
+      } catch (err) {
+        alert('Error: ' + err.message);
+        btn.disabled = false;
+        btn.textContent = 'Run';
+      }
+    }
+
+    function buildRunCard(run) {
+      const card = document.createElement('div');
+      card.className = 'run-card';
+      card.id = `run-${run.run_id}`;
+      const isPending = run.approved === 0;
+      card.innerHTML = `
+        <div class="run-header">
+          <div>
+            <div class="run-title">${escHtml(run.ticket_filename)}</div>
+            <div class="run-date">${fmtDate(run.created_at)} · run #${run.run_id}</div>
+          </div>
+          ${verdictBadge(run.approved)}
+        </div>
+
+        ${run.planner_output != null ? `
+        <div class="run-section-label" onclick="toggleSection(this, 'plan-${run.run_id}')">
+          Plan ▶
+        </div>
+        <div id="plan-${run.run_id}" class="review-box" style="display:none">${escHtml(run.planner_output ?? '')}</div>
+        ` : ''}
+
+        <div class="run-section-label" onclick="toggleSection(this, 'dev-${run.run_id}')">
+          Dev output ▶
+        </div>
+        <div id="dev-${run.run_id}" class="review-box" style="display:none">${escHtml(run.dev_output ?? '')}</div>
+
+        <div class="run-section-label" onclick="toggleSection(this, 'review-${run.run_id}')">
+          Review ▶
+        </div>
+        <div id="review-${run.run_id}" class="review-box" style="display:none">${escHtml(run.review_output ?? '')}</div>
+
+        <div class="btn-row" style="margin-top:12px">
+          <button class="btn-approve" onclick="vote(${run.run_id}, 'approve', this)" ${isPending ? '' : 'disabled'}>
+            Approve
+          </button>
+          <button class="btn-flag" onclick="vote(${run.run_id}, 'flag', this)" ${isPending ? '' : 'disabled'}>
+            Flag
+          </button>
+        </div>
+      `;
+      return card;
+    }
+
+    function toggleSection(label, id) {
+      const box = document.getElementById(id);
+      const open = box.style.display !== 'none';
+      box.style.display = open ? 'none' : '';
+      label.textContent = label.textContent.replace(open ? '▼' : '▶', open ? '▶' : '▼');
+    }
+
+    async function vote(runId, action, btn) {
+      btn.disabled = true;
+      const card = document.getElementById(`run-${runId}`);
+      card.querySelectorAll('button').forEach(b => b.disabled = true);
+      try {
+        const res = await fetch(`/api/runs/${runId}/${action}`, { method: 'POST' });
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+        const badge = card.querySelector('.badge:last-of-type');
+        if (action === 'approve') {
+          badge.className = 'badge badge-approve'; badge.textContent = 'Approved';
+        } else {
+          badge.className = 'badge badge-flagged'; badge.textContent = 'Flagged';
+        }
+      } catch (err) {
+        alert('Error: ' + err.message);
+        card.querySelectorAll('button').forEach(b => b.disabled = false);
+      }
+    }
+
+    // ── Load ─────────────────────────────────────────────────────────────────
+
+    async function load() {
+      const res = await fetch(`/api/projects/${projectId}/runs`);
+      const data = await res.json();
+      if (data.error) { document.getElementById('loading').textContent = data.error; return; }
+
+      document.getElementById('loading').remove();
+      document.getElementById('content').style.display = '';
+
+      const p = data.project;
+      document.title = p.name;
+      document.getElementById('project-name').textContent = p.name;
+      document.getElementById('project-badge').outerHTML =
+        `<span id="project-badge">${statusBadge(p.status)}</span>`;
+      const ghLink = document.getElementById('project-github');
+      ghLink.href = p.github_url; ghLink.textContent = p.github_url;
+      if (p.description) document.getElementById('project-desc').textContent = p.description;
+
+      renderBrief(data.brief, data.tree);
+      renderTickets(data.tickets);
+      renderRuns(data.runs);
+
+      if (data.tickets.some(t => t.is_running)) startPolling();
+
+      // Default tab: Runs if any exist, otherwise Brief
+      if (data.runs.length) {
+        document.querySelectorAll('.tab-btn')[2].click();
+      }
+    }
+
+    load().catch(err => {
+      document.getElementById('loading').textContent = 'Failed to load: ' + err.message;
+    });
+  </script>
+</body>
+</html>
