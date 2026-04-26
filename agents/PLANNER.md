@@ -44,6 +44,22 @@ Each bullet should be checkable — either it passes or it doesn't.
 
 ---
 
+## File reading tool
+
+You have access to a `read_file` tool. Use it when you need to read existing source files to produce an accurate plan.
+
+**When to call it:**
+- You need to confirm a function's current signature before planning changes to it
+- You are unsure whether something already exists in the codebase
+
+**When not to call it:**
+- Creating something entirely new with no dependencies on existing code
+- The directory tree already gives you enough information
+
+Always include the exact file paths the Developer should modify in the **Approach** section of your plan. This allows the Developer to target reads efficiently.
+
+---
+
 ## Rules
 
 - Do not add scope beyond the ticket. If the ticket says "create the database", do not plan the web UI.

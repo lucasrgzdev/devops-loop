@@ -31,6 +31,27 @@ FEEDBACK_LOG = ROOT / "feedback_log.md"
 
 MODEL = "claude-sonnet-4-6"
 MAX_TOKENS = 4000
+MAX_TOOL_CALLS = 10
+MAX_FILE_CHARS = 8_000
+
+READ_FILE_TOOL = {
+    "name": "read_file",
+    "description": (
+        "Read a file from the project repository. "
+        "Call this before writing code that touches an existing file. "
+        "Prefer the files the Planner identified as relevant."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Path relative to the repo root, e.g. 'scripts/run.py'",
+            }
+        },
+        "required": ["path"],
+    },
+}
 
 TREE_EXCLUDE = {
     ".git", "__pycache__", ".venv", "venv", "node_modules",
@@ -74,6 +95,30 @@ def build_tree(root: Path, prefix: str = "", depth: int = 0, max_depth: int = 3)
     return "\n".join(lines)
 
 
+def _execute_tool(name: str, tool_input: dict, repo_path: Path) -> str:
+    if name != "read_file":
+        return f"Unknown tool: {name}"
+    rel = tool_input.get("path", "").lstrip("/\\")
+    target = (repo_path / rel).resolve()
+    try:
+        target.relative_to(repo_path.resolve())
+    except ValueError:
+        return "Error: path escapes the repository root."
+    if not target.exists():
+        return f"File not found: {rel}"
+    if not target.is_file():
+        return f"Not a file: {rel}"
+    try:
+        content = target.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return f"Binary file, cannot read as text: {rel}"
+    except OSError as exc:
+        return f"Error reading {rel}: {exc}"
+    if len(content) > MAX_FILE_CHARS:
+        content = content[:MAX_FILE_CHARS] + f"\n\n[truncated — {len(content)} total chars]"
+    return content
+
+
 def call_agent(
     client: anthropic.Anthropic,
     mra_content: str,
@@ -98,6 +143,50 @@ def call_agent(
         messages=[{"role": "user", "content": user_message}],
     )
     return response.content[0].text
+
+
+def call_agent_agentic(
+    client: anthropic.Anthropic,
+    mra_content: str,
+    agent_content: str,
+    user_message: str,
+    repo_path: Path | None = None,
+) -> str:
+    system = [
+        {"type": "text", "text": mra_content, "cache_control": {"type": "ephemeral"}},
+        {"type": "text", "text": agent_content},
+    ]
+    messages: list[dict] = [{"role": "user", "content": user_message}]
+    tools = [READ_FILE_TOOL] if (repo_path and repo_path.exists()) else []
+    tool_calls = 0
+
+    while True:
+        # Stop offering tools once the cap is reached so the model must finish.
+        active_tools = tools if tool_calls < MAX_TOOL_CALLS else []
+        response = client.messages.create(
+            model=MODEL,
+            max_tokens=MAX_TOKENS,
+            system=system,
+            messages=messages,
+            **({"tools": active_tools} if active_tools else {}),
+        )
+
+        if response.stop_reason != "tool_use":
+            return "\n".join(b.text for b in response.content if hasattr(b, "text"))
+
+        messages.append({"role": "assistant", "content": response.content})
+        results = []
+        for block in response.content:
+            if block.type == "tool_use":
+                tool_calls += 1
+                result = _execute_tool(block.name, block.input, repo_path)
+                print(f"    [read] {block.input.get('path', '?')}")
+                results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": result,
+                })
+        messages.append({"role": "user", "content": results})
 
 
 def find_ticket_file(project_name: str, ticket_number: str) -> Path:
@@ -234,7 +323,7 @@ def main() -> None:
         tree_section = f"\n\n## Codebase structure\n\n```\n{repo_path.name}/\n{tree}\n```"
         print()
 
-    print("[1/3] Planner ...")
+    print("[1/3] Planner (agentic) ...")
     planner_prompt = (
         f"## Project brief\n\n{brief_content}\n\n"
         f"## GitHub repo\n\n{github_url}"
@@ -242,14 +331,14 @@ def main() -> None:
         + tree_section
         + f"\n\n## Ticket\n\n{ticket_content}"
     )
-    planner_output = call_agent(client, mra, planner_agent, planner_prompt)
+    planner_output = call_agent_agentic(client, mra, planner_agent, planner_prompt, repo_path)
 
-    print("[2/3] Developer ...")
+    print("[2/3] Developer (agentic) ...")
     dev_prompt = (
         f"## Ticket\n\n{ticket_content}\n\n"
         f"## Planning notes\n\n{planner_output}"
     )
-    dev_output = call_agent(client, mra, dev_agent, dev_prompt)
+    dev_output = call_agent_agentic(client, mra, dev_agent, dev_prompt, repo_path)
 
     print("[3/3] Reviewer ...")
     reviewer_prompt = (
