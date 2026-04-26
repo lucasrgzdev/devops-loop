@@ -18,6 +18,9 @@ Use it as the standard. If the Developer violated a guideline, name the guidelin
 - The Developer's output (code + assumptions + file list)
 - MRA guidelines (in context)
 - The original ticket (for alignment check)
+- A `## Git diff` section (when present) showing the exact lines written to disk — use this as ground truth for what was actually changed. If absent, the developer made no file writes.
+
+You also have access to a `read_file` tool. Use it sparingly to verify specific claims in the diff (e.g., check that an import was added, or that a function call is correct in context).
 
 ---
 

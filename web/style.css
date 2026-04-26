@@ -492,3 +492,32 @@ button:disabled { opacity: 0.4; cursor: default; }
   letter-spacing: 0.05em;
 }
 .run-section-label:hover { color: var(--text); }
+.diff-label { color: #7aa; }
+.diff-label:hover { color: #aee; }
+
+/* ── Git diff ── */
+.diff-box {
+  background: #0a0f0a;
+  border: 1px solid #2a3a2a;
+  border-radius: var(--radius);
+  padding: var(--gap);
+  margin-bottom: var(--gap);
+  overflow-x: auto;
+  font-family: "Courier New", monospace;
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+.diff-box pre { white-space: pre; }
+
+/* ── Branch badge ── */
+.diff-branch-badge {
+  display: inline-block;
+  background: #1a2a1a;
+  border: 1px solid #2a4a2a;
+  color: var(--green);
+  font-size: 0.7rem;
+  font-family: "Courier New", monospace;
+  padding: 2px 7px;
+  border-radius: 4px;
+  margin-top: 4px;
+}

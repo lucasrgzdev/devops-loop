@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sqlite3
 import subprocess
 from datetime import datetime
@@ -53,6 +54,30 @@ READ_FILE_TOOL = {
     },
 }
 
+WRITE_FILE_TOOL = {
+    "name": "write_file",
+    "description": (
+        "Write content to a file in the project repository. "
+        "Creates the file if it doesn't exist, overwrites if it does. "
+        "Always read the existing file first before overwriting. "
+        "Use this to apply your code changes directly — do NOT just output code blocks."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Path relative to the repo root, e.g. 'scripts/run.py'",
+            },
+            "content": {
+                "type": "string",
+                "description": "The complete file content to write.",
+            },
+        },
+        "required": ["path", "content"],
+    },
+}
+
 TREE_EXCLUDE = {
     ".git", "__pycache__", ".venv", "venv", "node_modules",
     ".mypy_cache", ".ruff_cache", ".pytest_cache", ".tox",
@@ -72,6 +97,54 @@ def git_pull(repo_path: Path) -> None:
     )
     msg = result.stdout.strip() or result.stderr.strip() or "done"
     print(f"  git pull: {msg}")
+
+
+def git_get_branch(repo_path: Path) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(repo_path), "rev-parse", "--abbrev-ref", "HEAD"],
+        capture_output=True, text=True,
+    )
+    return result.stdout.strip() or "main"
+
+
+def git_create_branch(repo_path: Path, branch: str) -> None:
+    subprocess.run(
+        ["git", "-C", str(repo_path), "checkout", "-b", branch],
+        capture_output=True, text=True,
+    )
+
+
+def git_stage_and_diff(repo_path: Path) -> str:
+    subprocess.run(["git", "-C", str(repo_path), "add", "-A"], capture_output=True)
+    result = subprocess.run(
+        ["git", "-C", str(repo_path), "diff", "--cached"],
+        capture_output=True, text=True,
+    )
+    return result.stdout
+
+
+def git_commit_run(repo_path: Path, ticket_stem: str, run_id: int) -> None:
+    msg = f"chore(devops-loop): run #{run_id} — {ticket_stem}"
+    subprocess.run(
+        ["git", "-C", str(repo_path), "commit", "-m", msg],
+        capture_output=True, text=True,
+    )
+
+
+def git_revert_and_restore(repo_path: Path, original_branch: str) -> None:
+    """Discard all staged/unstaged changes and return to original_branch."""
+    subprocess.run(["git", "-C", str(repo_path), "reset", "HEAD"], capture_output=True)
+    subprocess.run(["git", "-C", str(repo_path), "checkout", "--", "."], capture_output=True)
+    current = git_get_branch(repo_path)
+    if current != original_branch:
+        subprocess.run(
+            ["git", "-C", str(repo_path), "checkout", original_branch],
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(repo_path), "branch", "-D", current],
+            capture_output=True,
+        )
 
 
 def build_tree(root: Path, prefix: str = "", depth: int = 0, max_depth: int = 3) -> str:
@@ -95,28 +168,51 @@ def build_tree(root: Path, prefix: str = "", depth: int = 0, max_depth: int = 3)
     return "\n".join(lines)
 
 
-def _execute_tool(name: str, tool_input: dict, repo_path: Path) -> str:
-    if name != "read_file":
-        return f"Unknown tool: {name}"
-    rel = tool_input.get("path", "").lstrip("/\\")
+def _resolve_repo_path(rel: str, repo_path: Path) -> tuple[Path, str] | tuple[None, str]:
+    """Return (resolved_path, error_message). error_message is empty on success."""
+    rel = rel.lstrip("/\\")
     target = (repo_path / rel).resolve()
     try:
         target.relative_to(repo_path.resolve())
     except ValueError:
-        return "Error: path escapes the repository root."
-    if not target.exists():
-        return f"File not found: {rel}"
-    if not target.is_file():
-        return f"Not a file: {rel}"
-    try:
-        content = target.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
-        return f"Binary file, cannot read as text: {rel}"
-    except OSError as exc:
-        return f"Error reading {rel}: {exc}"
-    if len(content) > MAX_FILE_CHARS:
-        content = content[:MAX_FILE_CHARS] + f"\n\n[truncated — {len(content)} total chars]"
-    return content
+        return None, "Error: path escapes the repository root."
+    return target, ""
+
+
+def _execute_tool(name: str, tool_input: dict, repo_path: Path) -> str:
+    if name == "read_file":
+        rel = tool_input.get("path", "")
+        target, err = _resolve_repo_path(rel, repo_path)
+        if err:
+            return err
+        if not target.exists():
+            return f"File not found: {rel}"
+        if not target.is_file():
+            return f"Not a file: {rel}"
+        try:
+            content = target.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            return f"Binary file, cannot read as text: {rel}"
+        except OSError as exc:
+            return f"Error reading {rel}: {exc}"
+        if len(content) > MAX_FILE_CHARS:
+            content = content[:MAX_FILE_CHARS] + f"\n\n[truncated — {len(content)} total chars]"
+        return content
+
+    if name == "write_file":
+        rel = tool_input.get("path", "")
+        content = tool_input.get("content", "")
+        target, err = _resolve_repo_path(rel, repo_path)
+        if err:
+            return err
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+        except OSError as exc:
+            return f"Error writing {rel}: {exc}"
+        return f"Written: {rel} ({len(content)} chars)"
+
+    return f"Unknown tool: {name}"
 
 
 def call_agent(
@@ -151,13 +247,20 @@ def call_agent_agentic(
     agent_content: str,
     user_message: str,
     repo_path: Path | None = None,
+    write_enabled: bool = False,
 ) -> str:
     system = [
         {"type": "text", "text": mra_content, "cache_control": {"type": "ephemeral"}},
         {"type": "text", "text": agent_content},
     ]
     messages: list[dict] = [{"role": "user", "content": user_message}]
-    tools = [READ_FILE_TOOL] if (repo_path and repo_path.exists()) else []
+    has_repo = repo_path and repo_path.exists()
+    if has_repo and write_enabled:
+        tools = [READ_FILE_TOOL, WRITE_FILE_TOOL]
+    elif has_repo:
+        tools = [READ_FILE_TOOL]
+    else:
+        tools = []
     tool_calls = 0
 
     while True:
@@ -180,7 +283,8 @@ def call_agent_agentic(
             if block.type == "tool_use":
                 tool_calls += 1
                 result = _execute_tool(block.name, block.input, repo_path)
-                print(f"    [read] {block.input.get('path', '?')}")
+                verb = "write" if block.name == "write_file" else "read"
+                print(f"    [{verb}] {block.input.get('path', '?')}")
                 results.append({
                     "type": "tool_result",
                     "tool_use_id": block.id,
@@ -241,17 +345,23 @@ def write_outputs(
     dev_output: str,
     review_output: str,
     run_id: int,
+    diff: str = "",
+    branch: str = "",
 ) -> Path:
     out_dir = RUNS_DIR / project_name / ticket_stem
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "planner_output.md").write_text(planner_output, encoding="utf-8")
     (out_dir / "dev_output.md").write_text(dev_output, encoding="utf-8")
     (out_dir / "review_output.md").write_text(review_output, encoding="utf-8")
+    if diff:
+        (out_dir / "diff.patch").write_text(diff, encoding="utf-8")
     meta = {
         "run_id": run_id,
         "status": "pending",
         "approved": 0,
         "timestamp": datetime.utcnow().isoformat() + "Z",
+        "branch": branch,
+        "has_diff": bool(diff),
     }
     (out_dir / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
     return out_dir
@@ -316,9 +426,17 @@ def main() -> None:
     print(f"{'─' * 50}\n")
 
     tree_section = ""
-    if repo_path and repo_path.exists():
+    original_branch = None
+    work_branch = None
+    has_repo = repo_path and repo_path.exists()
+
+    if has_repo:
         print("Pulling latest changes ...")
         git_pull(repo_path)
+        original_branch = git_get_branch(repo_path)
+        work_branch = f"run/{ticket_path.stem}-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+        git_create_branch(repo_path, work_branch)
+        print(f"  branch: {work_branch}")
         tree = build_tree(repo_path)
         tree_section = f"\n\n## Codebase structure\n\n```\n{repo_path.name}/\n{tree}\n```"
         print()
@@ -333,27 +451,56 @@ def main() -> None:
     )
     planner_output = call_agent_agentic(client, mra, planner_agent, planner_prompt, repo_path)
 
-    print("[2/3] Developer (agentic) ...")
+    print("[2/3] Developer (agentic, write enabled) ...")
     dev_prompt = (
         f"## Ticket\n\n{ticket_content}\n\n"
         f"## Planning notes\n\n{planner_output}"
     )
-    dev_output = call_agent_agentic(client, mra, dev_agent, dev_prompt, repo_path)
+    dev_output = call_agent_agentic(
+        client, mra, dev_agent, dev_prompt, repo_path, write_enabled=True
+    )
+
+    # Stage all dev writes and capture the diff for the Reviewer.
+    diff_text = ""
+    if has_repo:
+        diff_text = git_stage_and_diff(repo_path)
+        if diff_text:
+            lines_changed = diff_text.count("\n")
+            print(f"  {lines_changed} diff lines staged")
+        else:
+            print("  no file changes staged")
 
     print("[3/3] Reviewer ...")
     reviewer_prompt = (
         f"## Ticket (alignment reference)\n\n{ticket_content}\n\n"
         f"## Developer output\n\n{dev_output}"
     )
+    if diff_text:
+        reviewer_prompt += f"\n\n## Git diff (actual files changed)\n\n```diff\n{diff_text}\n```"
     review_output = call_agent(client, mra, reviewer_agent, reviewer_prompt)
 
     ticket_id = get_or_create_ticket(conn, project_id, ticket_path.name, ticket_path.stem)
     run_id = save_run(conn, ticket_id, dev_output, review_output)
-    out_dir = write_outputs(
-        args.project, ticket_path.stem, planner_output, dev_output, review_output, run_id
-    )
 
     verdict = extract_verdict(review_output)
+
+    # Commit approved changes; revert and clean up the branch on rejection.
+    committed_branch = ""
+    if has_repo:
+        if verdict == "Approve" and diff_text:
+            git_commit_run(repo_path, ticket_path.stem, run_id)
+            committed_branch = work_branch
+            print(f"  committed to branch: {work_branch}")
+        else:
+            git_revert_and_restore(repo_path, original_branch)
+            work_branch = None
+            print("  changes reverted — back on", original_branch)
+
+    out_dir = write_outputs(
+        args.project, ticket_path.stem, planner_output, dev_output, review_output, run_id,
+        diff=diff_text, branch=committed_branch,
+    )
+
     append_feedback_log(args.project, ticket_path.stem, run_id, verdict)
 
     conn.execute("UPDATE tickets SET status = 'done' WHERE id = ?", (ticket_id,))
@@ -363,6 +510,8 @@ def main() -> None:
     print(f"\n{'─' * 50}")
     print(f"Run #{run_id} saved → {out_dir.relative_to(ROOT)}")
     print(f"Verdict : {verdict}")
+    if committed_branch:
+        print(f"Branch  : {committed_branch}")
     print(f"{'─' * 50}")
 
 

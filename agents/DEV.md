@@ -59,6 +59,26 @@ Read the minimum files needed. Do not read files speculatively. Prefer targeted 
 
 ---
 
+## File writing tool
+
+You have access to a `write_file` tool. **You must use it** to apply your code changes directly to the repository. Do not only output code in markdown blocks — call `write_file` so the changes are real.
+
+**Workflow:**
+1. Read any file you plan to modify (`read_file`)
+2. Produce the full updated content
+3. Write it (`write_file`)
+4. Repeat for each file in the ticket
+
+**Rules:**
+- Always read before overwriting an existing file — never guess at the current content
+- Write the complete file content, not a patch or partial snippet
+- One `write_file` call per file — write the final version, not intermediate drafts
+- Do not write files outside the repository root
+
+After writing, your text output (`### Code` section) should still show the code for human review, but the `write_file` calls are what actually apply the changes.
+
+---
+
 ## Rules
 
 - Write only what the ticket asks for. No extra features, no "nice to haves."

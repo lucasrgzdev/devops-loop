@@ -393,11 +393,15 @@
       card.className = 'run-card';
       card.id = `run-${run.run_id}`;
       const isPending = run.approved === 0;
+      const branchBadge = run.branch
+        ? `<span class="diff-branch-badge" title="Committed to this branch">${escHtml(run.branch)}</span>`
+        : '';
       card.innerHTML = `
         <div class="run-header">
           <div>
             <div class="run-title">${escHtml(run.ticket_filename)}</div>
             <div class="run-date">${fmtDate(run.created_at)} · run #${run.run_id}</div>
+            ${branchBadge}
           </div>
           ${verdictBadge(run.approved)}
         </div>
@@ -413,6 +417,13 @@
           Dev output ▶
         </div>
         <div id="dev-${run.run_id}" class="review-box" style="display:none">${escHtml(run.dev_output ?? '')}</div>
+
+        ${run.diff ? `
+        <div class="run-section-label diff-label" onclick="toggleSection(this, 'diff-${run.run_id}')">
+          Git diff ▶
+        </div>
+        <div id="diff-${run.run_id}" class="diff-box" style="display:none"><pre>${escHtml(run.diff)}</pre></div>
+        ` : ''}
 
         <div class="run-section-label" onclick="toggleSection(this, 'review-${run.run_id}')">
           Review ▶

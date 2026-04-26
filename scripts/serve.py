@@ -395,8 +395,19 @@ def project_runs(project_id: int) -> Response:
     for r in runs:
         rd = dict(r)
         stem = Path(r["ticket_filename"]).stem
-        planner_path = ROOT / "runs" / name / stem / "planner_output.md"
+        run_dir = ROOT / "runs" / name / stem
+        planner_path = run_dir / "planner_output.md"
+        diff_path = run_dir / "diff.patch"
+        meta_path = run_dir / "meta.json"
         rd["planner_output"] = planner_path.read_text(encoding="utf-8") if planner_path.exists() else None
+        rd["diff"] = diff_path.read_text(encoding="utf-8") if diff_path.exists() else None
+        rd["branch"] = None
+        if meta_path.exists():
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                rd["branch"] = meta.get("branch") or None
+            except (json.JSONDecodeError, OSError):
+                pass
         runs_out.append(rd)
 
     return jsonify({
